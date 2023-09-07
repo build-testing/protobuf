@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <string>
 
 #include "absl/log/absl_check.h"
 #include "google/protobuf/arena.h"
@@ -189,8 +190,46 @@ void InternalOutOfLineDeleteMessageLite(MessageLite* message) {
   delete message;
 }
 
-}  // namespace internal
+#ifdef __cpp_if_constexpr
 
+void RepeatedPtrFieldBase::MergeFromString(const RepeatedPtrFieldBase& from) {
+  int length = from.current_size_;
+  auto new_elements = reinterpret_cast<std::string**>(InternalExtend(length));
+  auto from_elements = reinterpret_cast<std::string* const*>(from.elements());
+  int length1 = std::min(ClearedCount(), length);
+  for (int i = 0; i < length1; ++i) {
+    new_elements[i]->assign(*from_elements[i]);
+  }
+  if (Arena* const arena = arena_) {
+    for (int i = length1; i < length; ++i) {
+      new_elements[i] = Arena::Create<std::string>(arena, *from_elements[i]);
+    }
+  } else {
+    for (int i = length1; i < length; ++i) {
+      new_elements[i] = new std::string(*from_elements[i]);
+    }
+  }
+  ExchangeCurrentSize(current_size_ + length);
+  if (current_size_ > allocated_size()) {
+    rep()->allocated_size = current_size_;
+  }
+}
+
+
+#endif  // __cpp_if_constexpr
+
+int RepeatedPtrFieldBase::MergeIntoClearedMessages(
+    const RepeatedPtrFieldBase& from) {
+  auto dst = reinterpret_cast<MessageLite**>(elements() + current_size_);
+  auto src = reinterpret_cast<MessageLite* const*>(from.elements());
+  int count = std::min(ClearedCount(), from.current_size_);
+  for (int i = 0; i < count; ++i) {
+    dst[i]->CheckTypeAndMergeFrom(*src[i]);
+  }
+  return count;
+}
+
+}  // namespace internal
 }  // namespace protobuf
 }  // namespace google
 

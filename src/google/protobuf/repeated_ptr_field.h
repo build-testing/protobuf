@@ -318,8 +318,19 @@ class PROTOBUF_EXPORT RepeatedPtrFieldBase {
     // calls the object-allocate and merge handlers.
     ABSL_DCHECK_NE(&other, this);
     if (other.current_size_ == 0) return;
+
+#ifdef __cpp_if_constexpr
+    using T = typename TypeHandler::Type;
+    if constexpr (std::is_base_of<::google::protobuf::MessageLite, T>::value) {
+      MergeFromMessage<T>(other);
+    } else {
+      static_assert(std::is_same<T, std::string>::value, "expected string");
+      MergeFromString(other);
+    }
+#else   // __cpp_if_constexpr
     MergeFromInternal(other,
                       &RepeatedPtrFieldBase::MergeFromInnerLoop<TypeHandler>);
+#endif  // __cpp_if_constexpr
   }
 
   inline void InternalSwap(RepeatedPtrFieldBase* PROTOBUF_RESTRICT rhs) {
@@ -773,6 +784,36 @@ class PROTOBUF_EXPORT RepeatedPtrFieldBase {
     ExchangeCurrentSize(0);
   }
 
+#ifdef __cpp_if_constexpr
+
+  void MergeFromString(const RepeatedPtrFieldBase& from);
+
+  template <typename T>
+  void MergeFromMessage(const RepeatedPtrFieldBase& from) {
+    int recycled = 0;
+    if (PROTOBUF_PREDICT_FALSE(ClearedCount() > 0)) {
+      recycled = MergeIntoClearedMessages(from);
+    }
+    Arena* arena = GetOwningArena();
+    int length = from.current_size_;
+    auto dst = reinterpret_cast<T**>(InternalExtend(length));
+    auto src = reinterpret_cast<T* const*>(from.elements());
+    for (int i = recycled; i < length; ++i) {
+      if constexpr (std::is_constructible<T, Arena*, const T&>::value) {
+        dst[i] = Arena::CreateMaybeMessage<T>(arena, *src[i]);
+      } else {
+        dst[i] = static_cast<T*>(src[i]->New(arena));
+        dst[i]->CheckTypeAndMergeFrom(*src[i]);
+      }
+    }
+    ExchangeCurrentSize(current_size_ + length);
+    if (current_size_ > allocated_size()) {
+      rep()->allocated_size = current_size_;
+    }
+  }
+
+#else  // __cpp_if_constexpr
+
   // Non-templated inner function to avoid code duplication. Takes a function
   // pointer to the type-specific (templated) inner allocate/merge loop.
   PROTOBUF_NOINLINE void MergeFromInternal(
@@ -814,6 +855,8 @@ class PROTOBUF_EXPORT RepeatedPtrFieldBase {
     }
   }
 
+#endif  // __cpp_if_constexpr
+
   // Internal helper: extends array space if necessary to contain
   // |extend_amount| more elements, and returns a pointer to the element
   // immediately following the old list of elements.  This interface factors out
@@ -825,6 +868,15 @@ class PROTOBUF_EXPORT RepeatedPtrFieldBase {
   // array, including potentially resizing the array with Reserve if
   // needed
   void* AddOutOfLineHelper(void* obj);
+
+  // Merges messages from `from` into available, cleared messages sitting in the
+  // range `[size(), allocated_size())`. Returns the number of message merged
+  // which is `ClearedCount(), from.size())`.
+  // Note that this function does explicitly NOT update `current_size_`.
+  // This function is out of line as it should be the slow path: this scenario
+  // only happens when a caller constructs and fills a repeated field, then
+  // shrinks it, and then merges additional messages into it.
+  int MergeIntoClearedMessages(const RepeatedPtrFieldBase& from);
 
   // A few notes on internal representation:
   //

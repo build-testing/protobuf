@@ -122,9 +122,6 @@ void Message::CopyFrom(const Message& from) {
   }
 }
 
-void Message::CopyWithSourceCheck(Message& to, const Message& from) {
-}
-
 std::string Message::GetTypeName() const {
   return GetDescriptor()->full_name();
 }
